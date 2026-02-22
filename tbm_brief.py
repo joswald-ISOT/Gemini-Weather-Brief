@@ -6,7 +6,7 @@ import pytz
 # --- PERFORMANCE & CONSTANTS ---
 PERF = {"tas": 330, "burn": 57, "climb_penalty": 12}
 KSTS_TZ = pytz.timezone('US/Pacific')
-KFFZ_TZ = pytz.timezone('US/Mountain') # Arizona
+KFFZ_TZ = pytz.timezone('US/Mountain') 
 
 def get_segmented_wind(fl, is_return, segment_index):
     base = 40 + (fl - 260) // 2
@@ -16,17 +16,19 @@ def get_segmented_wind(fl, is_return, segment_index):
 
 def get_wind_qualifier(wind):
     abs_w = abs(wind)
-    if abs_w > 55: return "++" if wind > 0 else "--" # Heavy
-    if abs_w < 20: return "+" if wind > 0 else "-"   # Light
-    return "" # Average
+    if abs_w > 55: return "++" if wind > 0 else "--"
+    if abs_w < 20: return "+" if wind > 0 else "-"
+    return ""
 
 # --- UI CONFIG ---
 st.set_page_config(page_title="TBM 960 Tactical Brief", layout="wide")
-# Custom CSS to tighten column widths and remove whitespace
+# Aggressive CSS to force narrow columns and reduce padding
 st.markdown("""
     <style>
-    .block-container {padding-top: 1rem;}
-    [data-testid="stMetricValue"] {font-size: 1.8rem;}
+    .block-container {padding-top: 0rem; padding-left: 1rem; padding-right: 1rem;}
+    [data-testid="stMetricValue"] {font-size: 1.5rem;}
+    [data-testid="stTable"] td {padding: 2px !important;}
+    thead tr th:first-child {width: 50px !important;}
     </style>
     """, unsafe_allow_html=True)
 
@@ -39,11 +41,10 @@ with st.sidebar:
     st.divider()
     st.header("📍 Mission Timing")
     
-    # Logic for auto-calculating Leg 2 departure based on Leg 1
-    # We use a static baseline for the initial arrival calculation
-    out_dep_pst_base = KSTS_TZ.localize(datetime.datetime.combine(datetime.date(2026, 2, 22), datetime.time(10, 0)))
-    out_ete_base = 1.63 # ~1h 38m baseline
-    out_arr_pst = out_dep_pst_base + datetime.timedelta(hours=out_ete_base)
+    # Baseline timing for automated calculations
+    out_dep_pst_fixed = KSTS_TZ.localize(datetime.datetime.combine(datetime.date(2026, 2, 22), datetime.time(10, 0)))
+    out_ete_base = 1.63 # 1h 38m
+    out_arr_pst = out_dep_pst_fixed + datetime.timedelta(hours=out_ete_base)
 
     if not is_return:
         dep_date = st.date_input("Outbound Date", datetime.date(2026, 2, 22))
@@ -51,12 +52,13 @@ with st.sidebar:
     else:
         quick_turn = st.checkbox("Quick Turn (30 min)", value=True)
         if not quick_turn:
-            turn_h = st.number_input("Turn Time (Hrs)", 0, 24, 1)
+            turn_h = st.number_input("Turn Time (Hrs)", 0, 24, 1) # Default 1 hr
             turn_m = st.number_input("Turn Time (Mins)", 0, 59, 0)
             turn_delta = datetime.timedelta(hours=turn_h, minutes=turn_m)
         else:
             turn_delta = datetime.timedelta(minutes=30)
         
+        # Calculate return departure based on turn_delta
         ret_calc_dt = out_arr_pst + turn_delta
         dep_date = st.date_input("Return Date", ret_calc_dt.astimezone(KFFZ_TZ).date())
         dep_time_local = st.time_input("Return Dep (KFFZ)", ret_calc_dt.astimezone(KFFZ_TZ).time())
@@ -78,7 +80,6 @@ col_h1, col_h2 = st.columns(2)
 with col_h1:
     st.metric("Dep Time (Local)", current_dep_dt.strftime("%H:%M"), f"({current_dep_pst.strftime('%H:%M')} PST)")
 
-# BUILD TABLE DATA
 results = []
 baseline_wind = 0
 for fl in [260, 270, 280, 290, 300, 310]:
@@ -110,20 +111,19 @@ with col_h2:
     qual = get_wind_qualifier(baseline_wind)
     st.metric("Direction", f"{'Westbound' if is_return else 'Eastbound'} ({w_type})", qual)
 
-# --- FINAL TABLE ---
+# --- COMPACT TABLE ---
 df = pd.DataFrame(results)
-# Use st.dataframe with column_config to force narrow widths
 st.dataframe(
     df.style.applymap(lambda x: 'color: red' if isinstance(x, int) and x < land_min else '', subset=['Landing']),
-    use_container_width=True,
+    use_container_width=False, # Changed to False to prevent stretching
     hide_index=True,
     column_config={
-        "FL": st.column_config.TextColumn(width="small"),
-        "Avg Wind": st.column_config.TextColumn(width="small"),
-        "ETE": st.column_config.TextColumn(width="small"),
-        "ETA (Local)": st.column_config.TextColumn(width="small"),
-        "ETA (PST)": st.column_config.TextColumn(width="small"),
-        "Fuel Burn": st.column_config.NumberColumn(width="small"),
-        "Landing": st.column_config.NumberColumn(width="small"),
+        "FL": st.column_config.TextColumn("FL", width=60),
+        "Avg Wind": st.column_config.TextColumn("Wind", width=70),
+        "ETE": st.column_config.TextColumn("ETE", width=80),
+        "ETA (Local)": st.column_config.TextColumn("ETA Loc", width=80),
+        "ETA (PST)": st.column_config.TextColumn("ETA PST", width=80),
+        "Fuel Burn": st.column_config.NumberColumn("Burn", width=70),
+        "Landing": st.column_config.NumberColumn("Land", width=70),
     }
 )
