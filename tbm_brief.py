@@ -102,4 +102,28 @@ for fl in [260, 270, 280, 290, 300, 310]:
     
     results.append({
         "FL": f"FL{fl}",
-        "Avg Wind": f
+        "Avg Wind": f"{avg_w}k",
+        "ETE": f"{int(total_time)}h {int((total_time%1)*60)}m",
+        "ETA (Local)": eta_dt.astimezone(dest_tz).strftime("%H:%M"),
+        "ETA (PST)": eta_pst.strftime("%H:%M"),
+        "Fuel Burn": burn,
+        "Landing": land_fuel
+    })
+
+with col_header2:
+    wind_type = "Headwind" if is_return else "Tailwind"
+    qualifier = get_wind_qualifier(avg_wind_all)
+    st.metric("Direction", f"{'Westbound' if is_return else 'Eastbound'} ({wind_type})", qualifier)
+
+# --- DISPLAY TABLE ---
+df = pd.DataFrame(results)
+
+# Custom Column Width Logic via Streamlit DataFrame
+st.dataframe(
+    df.style.applymap(lambda x: 'color: red' if isinstance(x, int) and x < land_min else '', subset=['Landing']),
+    use_container_width=True, 
+    hide_index=True
+)
+
+if not is_return:
+    st.info(f"💡 Outbound arrival at KFFZ estimated {eta_dt.astimezone(KFFZ_TZ).strftime('%H:%M')} Local.")
