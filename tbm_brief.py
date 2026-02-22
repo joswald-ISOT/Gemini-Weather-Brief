@@ -9,6 +9,7 @@ KSTS_TZ = pytz.timezone('US/Pacific')
 KFFZ_TZ = pytz.timezone('US/Mountain') 
 
 def get_segmented_wind(fl, is_return, segment_index):
+    # Simulated Jetstream behavior
     base = 40 + (fl - 260) // 2
     mountain = 25 if 4 <= segment_index <= 8 else 0
     total = base + mountain
@@ -22,20 +23,24 @@ def get_wind_qualifier(wind):
 
 # --- UI CONFIG ---
 st.set_page_config(page_title="TBM 960 Tactical Brief", layout="wide")
-# Aggressive CSS to force narrow columns and reduce padding
+# Adjusted top padding to fix the header being cut off
 st.markdown("""
     <style>
-    .block-container {padding-top: 0rem; padding-left: 1rem; padding-right: 1rem;}
+    .block-container {padding-top: 2rem; padding-left: 1.5rem; padding-right: 1.5rem;}
     [data-testid="stMetricValue"] {font-size: 1.5rem;}
     [data-testid="stTable"] td {padding: 2px !important;}
-    thead tr th:first-child {width: 50px !important;}
     </style>
     """, unsafe_allow_html=True)
 
 # SIDEBAR
 with st.sidebar:
     st.header("🗺️ Mission Control")
-    leg_select = st.radio("Active View", ["Outbound: KSTS -> KFFZ", "Return: KFFZ -> KSTS"])
+    # Added Airport ICAO Inputs
+    dep_icao = st.text_input("Departure ICAO", "KSTS").upper()
+    arr_icao = st.text_input("Destination ICAO", "KFFZ").upper()
+    
+    st.divider()
+    leg_select = st.radio("Active View", [f"Outbound: {dep_icao} -> {arr_icao}", f"Return: {arr_icao} -> {dep_icao}"])
     is_return = "Return" in leg_select
     
     st.divider()
@@ -48,20 +53,19 @@ with st.sidebar:
 
     if not is_return:
         dep_date = st.date_input("Outbound Date", datetime.date(2026, 2, 22))
-        dep_time_local = st.time_input("Outbound Dep (KSTS)", datetime.time(10, 0))
+        dep_time_local = st.time_input(f"Outbound Dep ({dep_icao})", datetime.time(10, 0))
     else:
         quick_turn = st.checkbox("Quick Turn (30 min)", value=True)
         if not quick_turn:
-            turn_h = st.number_input("Turn Time (Hrs)", 0, 24, 1) # Default 1 hr
+            turn_h = st.number_input("Turn Time (Hrs)", 0, 24, 1)
             turn_m = st.number_input("Turn Time (Mins)", 0, 59, 0)
             turn_delta = datetime.timedelta(hours=turn_h, minutes=turn_m)
         else:
             turn_delta = datetime.timedelta(minutes=30)
         
-        # Calculate return departure based on turn_delta
         ret_calc_dt = out_arr_pst + turn_delta
         dep_date = st.date_input("Return Date", ret_calc_dt.astimezone(KFFZ_TZ).date())
-        dep_time_local = st.time_input("Return Dep (KFFZ)", ret_calc_dt.astimezone(KFFZ_TZ).time())
+        dep_time_local = st.time_input(f"Return Dep ({arr_icao})", ret_calc_dt.astimezone(KFFZ_TZ).time())
 
     st.divider()
     st.header("⛽ Fuel")
@@ -69,9 +73,12 @@ with st.sidebar:
     land_min = st.number_input("Landing Min (Gal)", value=60)
 
 # --- CALCULATIONS ---
-current_dep_dt = (KFFZ_TZ if is_return else KSTS_TZ).localize(datetime.datetime.combine(dep_date, dep_time_local))
+# Local TZ lookup based on ICAO (simplification for current version)
+dep_tz = KSTS_TZ if not is_return else KFFZ_TZ
+dest_tz = KFFZ_TZ if not is_return else KSTS_TZ
+
+current_dep_dt = dep_tz.localize(datetime.datetime.combine(dep_date, dep_time_local))
 current_dep_pst = current_dep_dt.astimezone(KSTS_TZ)
-dest_tz = KSTS_TZ if is_return else KFFZ_TZ
 
 # DASHBOARD HEADER
 st.title(f"✈️ TBM 960: {leg_select}")
@@ -98,12 +105,12 @@ for fl in [260, 270, 280, 290, 300, 310]:
     
     results.append({
         "FL": f"FL{fl}",
-        "Avg Wind": f"{avg_w}k",
+        "Wind": f"{avg_w}k",
         "ETE": f"{int(total_time)}h {int((total_time%1)*60)}m",
-        "ETA (Local)": eta_dt.astimezone(dest_tz).strftime("%H:%M"),
-        "ETA (PST)": eta_dt.astimezone(KSTS_TZ).strftime("%H:%M"),
+        "ETA Loc": eta_dt.astimezone(dest_tz).strftime("%H:%M"),
+        "ETA PST": eta_dt.astimezone(KSTS_TZ).strftime("%H:%M"),
         "Fuel Burn": burn,
-        "Landing": land_fuel
+        "Fuel at Dest": land_fuel
     })
 
 with col_h2:
@@ -114,16 +121,16 @@ with col_h2:
 # --- COMPACT TABLE ---
 df = pd.DataFrame(results)
 st.dataframe(
-    df.style.applymap(lambda x: 'color: red' if isinstance(x, int) and x < land_min else '', subset=['Landing']),
-    use_container_width=False, # Changed to False to prevent stretching
+    df.style.applymap(lambda x: 'color: red' if isinstance(x, int) and x < land_min else '', subset=['Fuel at Dest']),
+    use_container_width=False,
     hide_index=True,
     column_config={
-        "FL": st.column_config.TextColumn("FL", width=60),
-        "Avg Wind": st.column_config.TextColumn("Wind", width=70),
-        "ETE": st.column_config.TextColumn("ETE", width=80),
-        "ETA (Local)": st.column_config.TextColumn("ETA Loc", width=80),
-        "ETA (PST)": st.column_config.TextColumn("ETA PST", width=80),
-        "Fuel Burn": st.column_config.NumberColumn("Burn", width=70),
-        "Landing": st.column_config.NumberColumn("Land", width=70),
+        "FL": st.column_config.TextColumn("FL", width=50),
+        "Wind": st.column_config.TextColumn("Wind", width=60),
+        "ETE": st.column_config.TextColumn("ETE", width=70),
+        "ETA Loc": st.column_config.TextColumn("ETA Loc", width=70),
+        "ETA PST": st.column_config.TextColumn("ETA PST", width=70),
+        "Fuel Burn": st.column_config.NumberColumn("Fuel Burn", width=85),
+        "Fuel at Dest": st.column_config.NumberColumn("Fuel at Dest", width=95),
     }
 )
