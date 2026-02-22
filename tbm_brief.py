@@ -2,113 +2,129 @@ import streamlit as st
 import pandas as pd
 import datetime
 import pytz
+import math
 
-# --- PERFORMANCE & CONSTANTS ---
-PERF = {"tas": 330, "burn": 57, "climb_penalty": 12}
-KSTS_TZ = pytz.timezone('US/Pacific')
-KFFZ_TZ = pytz.timezone('US/Mountain') 
+# --- 1. COORDINATE DATABASE & DISTANCE ENGINE ---
+# Real-world coordinates for accurate mission distance
+AIRPORTS = {
+    "KSTS": (38.5089, -122.8128, "US/Pacific"),
+    "KFFZ": (33.4608, -111.7283, "US/Mountain"),
+    "KJFK": (40.6413, -73.7781, "US/Eastern"),
+    "KSDL": (33.6228, -111.9105, "US/Mountain"),
+    "KDEN": (39.8561, -104.6737, "US/Mountain")
+}
 
-def is_valid_icao(code):
-    """Simple check for North American ICAO format (Starts with K, C, M, P)"""
-    return len(code) == 4 and code[0] in ["K", "C", "M", "P"]
+def get_distance(dep, arr):
+    if dep not in AIRPORTS or arr not in AIRPORTS: return 580 # Default if unknown
+    lat1, lon1 = math.radians(AIRPORTS[dep][0]), math.radians(AIRPORTS[dep][1])
+    lat2, lon2 = math.radians(AIRPORTS[arr][0]), math.radians(AIRPORTS[arr][1])
+    return 3440.06 * math.acos(math.sin(lat1)*math.sin(lat2) + math.cos(lat1)*math.cos(lat2)*math.cos(lon1-lon2))
 
-def get_segmented_wind(fl, is_return, segment_index):
-    base = 40 + (fl - 260) // 2
-    mountain = 25 if 4 <= segment_index <= 8 else 0
-    total = base + mountain
-    return -total if is_return else (total * 0.4)
+# --- 2. DYNAMIC WEATHER ENGINE (SEGMENTED) ---
+def get_live_segmented_wind(fl, is_return, seg_idx, total_segs):
+    # Simulated jetstream core for Feb 22, 2026
+    base_jet = 45 + (fl - 260) // 1.5
+    # Mountain wave effect peaks mid-flight (Sierras)
+    mountain_wave = 30 * math.sin(math.pi * (seg_idx / total_segs))
+    total_w = base_jet + mountain_wave
+    return -total_w if is_return else (total_w * 0.45)
 
-# --- UI CONFIG ---
-st.set_page_config(page_title="TBM 960 Tactical Brief", layout="wide")
+# --- 3. UI SETUP ---
+st.set_page_config(page_title="TBM 960 Mission Command", layout="wide")
 st.markdown("<style>.block-container {padding-top: 2rem;}</style>", unsafe_allow_html=True)
 
-# SIDEBAR
+# SIDEBAR: REACTIVE INPUTS
 with st.sidebar:
     st.header("🗺️ Mission Control")
-    
-    # FORCED UPPERCASE AND REACTIVE RECALC
+    # Instant Uppercase Conversion
     dep_icao = st.text_input("Departure ICAO", value="KSTS").upper()
     arr_icao = st.text_input("Destination ICAO", value="KFFZ").upper()
     
-    # Validation Check
-    if not is_valid_icao(dep_icao) or not is_valid_icao(arr_icao):
-        st.error("⚠️ Invalid ICAO. Please use a 4-letter code (e.g., KSTS).")
-        st.stop()
+    if dep_icao not in AIRPORTS or arr_icao not in AIRPORTS:
+        st.warning(f"Note: {dep_icao if dep_icao not in AIRPORTS else arr_icao} coordinates not in DB. Using default 580NM.")
     
     st.divider()
-    leg_select = st.radio("Active View", [f"Outbound: {dep_icao} -> {arr_icao}", f"Return: {arr_icao} -> {dep_icao}"])
-    is_return = "Return" in leg_select
+    leg_select = st.radio("Active View", ["Outbound", "Return"])
+    is_return = (leg_select == "Return")
     
     st.divider()
-    st.header("📍 Mission Timing")
+    st.header("📍 Timing")
+    dep_date = st.date_input("Date", datetime.date(2026, 2, 22))
     
-    # Timing Logic
-    out_dep_pst_fixed = KSTS_TZ.localize(datetime.datetime.combine(datetime.date(2026, 2, 22), datetime.time(10, 0)))
-    out_ete_base = 1.63 
-    out_arr_pst = out_dep_pst_fixed + datetime.timedelta(hours=out_ete_base)
-
-    if not is_return:
-        dep_date = st.date_input("Outbound Date", datetime.date(2026, 2, 22))
-        dep_time_local = st.time_input(f"Outbound Dep ({dep_icao})", datetime.time(10, 0))
-    else:
-        quick_turn = st.checkbox("Quick Turn (30 min)", value=True)
-        turn_delta = datetime.timedelta(minutes=30)
-        if not quick_turn:
-            turn_h = st.number_input("Turn Time (Hrs)", 0, 24, 1)
-            turn_m = st.number_input("Turn Time (Mins)", 0, 59, 0)
-            turn_delta = datetime.timedelta(hours=turn_h, minutes=turn_m)
-        
-        ret_calc_dt = out_arr_pst + turn_delta
-        dep_date = st.date_input("Return Date", ret_calc_dt.astimezone(KFFZ_TZ).date())
-        dep_time_local = st.time_input(f"Return Dep ({arr_icao})", ret_calc_dt.astimezone(KFFZ_TZ).time())
+    # Timezone Logic
+    dep_tz_str = AIRPORTS.get(dep_icao if not is_return else arr_icao, [0,0,"US/Pacific"])[2]
+    dep_tz = pytz.timezone(dep_tz_str)
+    dep_time_local = st.time_input(f"Departure ({dep_tz_str})", datetime.time(10, 0))
 
     st.divider()
-    st.header("⛽ Fuel")
-    start_fuel = st.number_input("Starting Fuel (Gal)", value=292.0, max_value=292.0)
-    land_min = st.number_input("Landing Min (Gal)", value=60.0)
+    quick_turn = st.checkbox("Quick Turn (30m)", value=True)
+    turn_h = st.number_input("Custom Turn (H)", 0, 24, 1) if not quick_turn else 0.5
+    
+    st.divider()
+    start_fuel = st.number_input("Fuel Load (Gal)", value=292)
+    land_min = st.number_input("Landing Min (Gal)", value=60)
 
-# --- CALCULATIONS ---
-dep_tz = KSTS_TZ if not is_return else KFFZ_TZ
-dest_tz = KFFZ_TZ if not is_return else KSTS_TZ
+# --- 4. CORE MISSION CALCULATIONS ---
+# Calculate Distance
+mission_dist = get_distance(dep_icao if not is_return else arr_icao, arr_icao if not is_return else dep_icao)
+
+# Departure Time Setup
 current_dep_dt = dep_tz.localize(datetime.datetime.combine(dep_date, dep_time_local))
-current_dep_pst = current_dep_dt.astimezone(KSTS_TZ)
+pst_tz = pytz.timezone("US/Pacific")
+dest_tz_str = AIRPORTS.get(arr_icao if not is_return else dep_icao, [0,0,"US/Pacific"])[2]
+dest_tz = pytz.timezone(dest_tz_str)
 
-st.title(f"✈️ TBM 960: {leg_select}")
-c1, c2 = st.columns(2)
-
-with c1:
-    st.metric("Dep Time (Local)", current_dep_dt.strftime("%H:%M"), f"({current_dep_pst.strftime('%H:%M')} PST)")
-
+# Build Table
 results = []
-exceeds_range = False
-# Simulation distance factor: KJFK is roughly 4x longer than KFFZ
-dist = 2240 if arr_icao == "KJFK" else 580
-
+baseline_avg_wind = 0
 for fl in [260, 270, 280, 290, 300, 310]:
-    total_time, wind_sum = 0, 0
-    for i in range(12):
-        w = get_segmented_wind(fl, is_return, i)
-        wind_sum += w
-        total_time += (dist/12) / (PERF["tas"] + w)
+    t_time, w_sum = 0, 0
+    segs = 15
+    for i in range(segs):
+        w = get_live_segmented_wind(fl, is_return, i, segs)
+        w_sum += w
+        t_time += (mission_dist / segs) / (330 + w)
     
-    burn = int((total_time * PERF["burn"]) + PERF["climb_penalty"])
-    land_fuel = int(start_fuel - burn)
-    if burn > start_fuel: exceeds_range = True
-
-    eta_dt = current_dep_dt + datetime.timedelta(hours=total_time)
+    avg_w = int(w_sum / segs)
+    if fl == 280: baseline_avg_wind = avg_w
+    
+    f_burn = int((t_time * 57) + 12)
+    f_dest = start_fuel - f_burn
+    eta_dt = current_dep_dt + datetime.timedelta(hours=t_time)
+    
     results.append({
-        "FL": f"FL{fl}", "Wind": f"{int(wind_sum/12)}k", "ETE": f"{int(total_time)}h {int((total_time%1)*60)}m",
-        "ETA Loc": eta_dt.astimezone(dest_tz).strftime("%H:%M"), "ETA PST": eta_dt.astimezone(KSTS_TZ).strftime("%H:%M"),
-        "Fuel Burn": burn, "Fuel at Dest": land_fuel
+        "FL": f"FL{fl}", "Wind": f"{avg_w}k", "ETE": f"{int(t_time)}h {int((t_time%1)*60)}m",
+        "ETA Loc": eta_dt.astimezone(dest_tz).strftime("%H:%M"), 
+        "ETA PST": eta_dt.astimezone(pst_tz).strftime("%H:%M"),
+        "Fuel Burn": f_burn, "Fuel at Dest": f_dest
     })
 
-if exceeds_range:
-    st.error(f"🚨 **RANGE EXCEEDED:** This mission requires approx {results[-1]['Fuel Burn']} Gal. Plan a fuel stop.")
+# --- 5. DASHBOARD DISPLAY ---
+st.title(f"✈️ TBM 960: {dep_icao if not is_return else arr_icao} → {arr_icao if not is_return else dep_icao}")
 
+c1, c2 = st.columns(2)
+with c1:
+    st.metric("Dep Time (Local)", current_dep_dt.strftime("%H:%M"), f"({current_dep_dt.astimezone(pst_tz).strftime('%H:%M')} PST)")
+with c2:
+    w_type = "Headwind" if is_return else "Tailwind"
+    qual = "++" if abs(baseline_avg_wind) > 55 else "+" if abs(baseline_avg_wind) < 20 else ""
+    st.metric("Direction", f"{'Westbound' if is_return else 'Eastbound'} ({w_type})", f"{baseline_avg_wind}k {qual}")
+
+# Table Output with Formatting
 df = pd.DataFrame(results)
-st.dataframe(df.style.applymap(lambda x: 'color: red' if isinstance(x, int) and x < land_min else '', subset=['Fuel at Dest']),
-             use_container_width=False, hide_index=True,
-             column_config={"FL": st.column_config.TextColumn("FL", width=50), "Wind": st.column_config.TextColumn("Wind", width=60),
-                            "ETE": st.column_config.TextColumn("ETE", width=70), "ETA Loc": st.column_config.TextColumn("ETA Loc", width=70),
-                            "ETA PST": st.column_config.TextColumn("ETA PST", width=70), "Fuel Burn": st.column_config.NumberColumn("Fuel Burn", width=85),
-                            "Fuel at Dest": st.column_config.NumberColumn("Fuel at Dest", width=95)})
+st.dataframe(
+    df.style.applymap(lambda x: 'color: red' if isinstance(x, int) and x < land_min else '', subset=['Fuel at Dest']),
+    use_container_width=False, hide_index=True,
+    column_config={
+        "FL": st.column_config.TextColumn("FL", width=50),
+        "Wind": st.column_config.TextColumn("Wind", width=60),
+        "ETE": st.column_config.TextColumn("ETE", width=80),
+        "ETA Loc": st.column_config.TextColumn("ETA Loc", width=80),
+        "ETA PST": st.column_config.TextColumn("ETA PST", width=80),
+        "Fuel Burn": st.column_config.NumberColumn("Fuel Burn", width=90),
+        "Fuel at Dest": st.column_config.NumberColumn("Fuel at Dest", width=100),
+    }
+)
+
+if results[0]['Fuel at Dest'] < 0:
+    st.error(f"🚨 MISSION IMPOSSIBLE: Calculated burn ({results[0]['Fuel Burn']}g) exceeds fuel on board ({start_fuel}g). Plan fuel stop.")
