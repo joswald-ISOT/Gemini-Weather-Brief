@@ -5,11 +5,11 @@ import pytz
 
 # --- PERFORMANCE & CONSTANTS ---
 PERF = {"tas": 330, "burn": 57, "climb_penalty": 12}
+MAX_USABLE_FUEL = 292
 KSTS_TZ = pytz.timezone('US/Pacific')
 KFFZ_TZ = pytz.timezone('US/Mountain') 
 
 def get_segmented_wind(fl, is_return, segment_index):
-    # Simulated Jetstream behavior
     base = 40 + (fl - 260) // 2
     mountain = 25 if 4 <= segment_index <= 8 else 0
     total = base + mountain
@@ -23,7 +23,6 @@ def get_wind_qualifier(wind):
 
 # --- UI CONFIG ---
 st.set_page_config(page_title="TBM 960 Tactical Brief", layout="wide")
-# Adjusted top padding to fix the header being cut off
 st.markdown("""
     <style>
     .block-container {padding-top: 2rem; padding-left: 1.5rem; padding-right: 1.5rem;}
@@ -35,7 +34,7 @@ st.markdown("""
 # SIDEBAR
 with st.sidebar:
     st.header("🗺️ Mission Control")
-    # Added Airport ICAO Inputs
+    # FORCED UPPERCASE logic added here
     dep_icao = st.text_input("Departure ICAO", "KSTS").upper()
     arr_icao = st.text_input("Destination ICAO", "KFFZ").upper()
     
@@ -46,9 +45,8 @@ with st.sidebar:
     st.divider()
     st.header("📍 Mission Timing")
     
-    # Baseline timing for automated calculations
     out_dep_pst_fixed = KSTS_TZ.localize(datetime.datetime.combine(datetime.date(2026, 2, 22), datetime.time(10, 0)))
-    out_ete_base = 1.63 # 1h 38m
+    out_ete_base = 1.63 
     out_arr_pst = out_dep_pst_fixed + datetime.timedelta(hours=out_ete_base)
 
     if not is_return:
@@ -69,18 +67,15 @@ with st.sidebar:
 
     st.divider()
     st.header("⛽ Fuel")
-    start_fuel = st.number_input("Starting Fuel (Gal)", value=292)
-    land_min = st.number_input("Landing Min (Gal)", value=60)
+    start_fuel = st.number_input("Starting Fuel (Gal)", value=292.0, max_value=292.0)
+    land_min = st.number_input("Landing Min (Gal)", value=60.0)
 
 # --- CALCULATIONS ---
-# Local TZ lookup based on ICAO (simplification for current version)
 dep_tz = KSTS_TZ if not is_return else KFFZ_TZ
 dest_tz = KFFZ_TZ if not is_return else KSTS_TZ
-
 current_dep_dt = dep_tz.localize(datetime.datetime.combine(dep_date, dep_time_local))
 current_dep_pst = current_dep_dt.astimezone(KSTS_TZ)
 
-# DASHBOARD HEADER
 st.title(f"✈️ TBM 960: {leg_select}")
 col_h1, col_h2 = st.columns(2)
 
@@ -89,48 +84,46 @@ with col_h1:
 
 results = []
 baseline_wind = 0
+exceeds_range = False
+
+# Distance Logic (KSTS-KFFZ is ~580nm, KSTS-KJFK is ~2240nm)
+dist = 580 if arr_icao != "KJFK" else 2240
+
 for fl in [260, 270, 280, 290, 300, 310]:
     total_time, wind_sum = 0, 0
     for i in range(12):
         w = get_segmented_wind(fl, is_return, i)
         wind_sum += w
-        total_time += (580/12) / (PERF["tas"] + w)
+        total_time += (dist/12) / (PERF["tas"] + w)
     
     avg_w = int(wind_sum/12)
     if fl == 280: baseline_wind = avg_w
     
     burn = int((total_time * PERF["burn"]) + PERF["climb_penalty"])
     land_fuel = int(start_fuel - burn)
-    eta_dt = current_dep_dt + datetime.timedelta(hours=total_time)
     
+    if burn > start_fuel:
+        exceeds_range = True
+
+    eta_dt = current_dep_dt + datetime.timedelta(hours=total_time)
     results.append({
-        "FL": f"FL{fl}",
-        "Wind": f"{avg_w}k",
-        "ETE": f"{int(total_time)}h {int((total_time%1)*60)}m",
-        "ETA Loc": eta_dt.astimezone(dest_tz).strftime("%H:%M"),
-        "ETA PST": eta_dt.astimezone(KSTS_TZ).strftime("%H:%M"),
-        "Fuel Burn": burn,
-        "Fuel at Dest": land_fuel
+        "FL": f"FL{fl}", "Wind": f"{avg_w}k", "ETE": f"{int(total_time)}h {int((total_time%1)*60)}m",
+        "ETA Loc": eta_dt.astimezone(dest_tz).strftime("%H:%M"), "ETA PST": eta_dt.astimezone(KSTS_TZ).strftime("%H:%M"),
+        "Fuel Burn": burn, "Fuel at Dest": land_fuel
     })
+
+# RANGE ALERT
+if exceeds_range:
+    st.error(f"🚨 **RANGE EXCEEDED:** This leg requires {results[-1]['Fuel Burn']} Gal. The TBM 960 max usable fuel is 292 Gal. Plan a fuel stop.")
 
 with col_h2:
     w_type = "Headwind" if is_return else "Tailwind"
-    qual = get_wind_qualifier(baseline_wind)
-    st.metric("Direction", f"{'Westbound' if is_return else 'Eastbound'} ({w_type})", qual)
+    st.metric("Direction", f"{'Westbound' if is_return else 'Eastbound'} ({w_type})", get_wind_qualifier(baseline_wind))
 
-# --- COMPACT TABLE ---
 df = pd.DataFrame(results)
-st.dataframe(
-    df.style.applymap(lambda x: 'color: red' if isinstance(x, int) and x < land_min else '', subset=['Fuel at Dest']),
-    use_container_width=False,
-    hide_index=True,
-    column_config={
-        "FL": st.column_config.TextColumn("FL", width=50),
-        "Wind": st.column_config.TextColumn("Wind", width=60),
-        "ETE": st.column_config.TextColumn("ETE", width=70),
-        "ETA Loc": st.column_config.TextColumn("ETA Loc", width=70),
-        "ETA PST": st.column_config.TextColumn("ETA PST", width=70),
-        "Fuel Burn": st.column_config.NumberColumn("Fuel Burn", width=85),
-        "Fuel at Dest": st.column_config.NumberColumn("Fuel at Dest", width=95),
-    }
-)
+st.dataframe(df.style.applymap(lambda x: 'color: red' if isinstance(x, int) and x < land_min else '', subset=['Fuel at Dest']),
+             use_container_width=False, hide_index=True,
+             column_config={"FL": st.column_config.TextColumn("FL", width=50), "Wind": st.column_config.TextColumn("Wind", width=60),
+                            "ETE": st.column_config.TextColumn("ETE", width=70), "ETA Loc": st.column_config.TextColumn("ETA Loc", width=70),
+                            "ETA PST": st.column_config.TextColumn("ETA PST", width=70), "Fuel Burn": st.column_config.NumberColumn("Fuel Burn", width=85),
+                            "Fuel at Dest": st.column_config.NumberColumn("Fuel at Dest", width=95)})
